@@ -101,6 +101,9 @@ set (mraa_LIB_ARM_SRCS_NOAUTO
   ${PROJECT_SOURCE_DIR}/src/arm/phyboard.c
   ${PROJECT_SOURCE_DIR}/src/arm/banana.c
   ${PROJECT_SOURCE_DIR}/src/arm/de_nano_soc.c
+  ${PROJECT_SOURCE_DIR}/src/arm/siemens/iot2050.c
+  ${PROJECT_SOURCE_DIR}/src/arm/siemens/platform.c
+  ${PROJECT_SOURCE_DIR}/src/arm/siemens/platform_iot2050.c
 )
 
 set (mraa_LIB_MIPS_SRCS_NOAUTO

@@ -32,6 +32,7 @@
 #include "arm/beaglebone.h"
 #include "arm/phyboard.h"
 #include "arm/raspberry_pi.h"
+#include "arm/siemens/iot2050.h"
 #include "mraa_internal.h"
 
 
@@ -102,6 +103,8 @@ mraa_arm_platform()
             platform_type = MRAA_96BOARDS;
         else if (mraa_file_contains("/proc/device-tree/compatible", "raspberrypi,"))
             platform_type = MRAA_RASPBERRY_PI;
+        else if (mraa_file_contains("/proc/device-tree/model", "SIMATIC IOT2050"))
+            platform_type = MRAA_SIEMENS_IOT2050;
     }
 
     switch (platform_type) {
@@ -122,6 +125,9 @@ mraa_arm_platform()
             break;
         case MRAA_DE_NANO_SOC:
             plat = mraa_de_nano_soc();
+            break;
+        case MRAA_SIEMENS_IOT2050:
+            plat = mraa_siemens_iot2050();
             break;
         default:
             plat = NULL;
