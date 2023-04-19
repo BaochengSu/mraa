@@ -99,6 +99,8 @@ mraa_arm_platform()
             platform_type = MRAA_RASPBERRY_PI;
         else if (mraa_file_contains("/proc/device-tree/model", "ADLINK ARM, LEC-PX30"))
             platform_type = MRAA_ADLINK_IPI;
+        else if (mraa_file_contains("/proc/device-tree/model", "SIMATIC IOT2050 Advanced SM"))
+            platform_type = MRAA_SIEMENS_IOT2050_SM;
         else if (mraa_file_contains("/proc/device-tree/model", "SIMATIC IOT2050"))
             platform_type = MRAA_SIEMENS_IOT2050;
     }
@@ -129,6 +131,9 @@ mraa_arm_platform()
             plat = mraa_adlink_ipi();
         case MRAA_SIEMENS_IOT2050:
             plat = mraa_siemens_iot2050();
+            break;
+        case MRAA_SIEMENS_IOT2050_SM:
+            plat = mraa_siemens_iot2050_sm();
             break;
         default:
             plat = NULL;
