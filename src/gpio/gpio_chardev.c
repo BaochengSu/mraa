@@ -266,7 +266,7 @@ mraa_get_chip_base_by_number(unsigned number)
     path = mraa_file_unglob(glob);
     free(glob);
     if (!path) {
-        syslog(LOG_ERR, "[GPIOD_INTERFACE]: invalid chip number");
+        syslog(LOG_ERR, "[GPIOD_INTERFACE]: invalid chip number: %d", number);
         res = -1;
     } else {
         fh = fopen(path, "r");
@@ -274,9 +274,11 @@ mraa_get_chip_base_by_number(unsigned number)
             syslog(LOG_ERR, "[GPIOD_INTERFACE]: could not read from %s", path);
             res = -1;
         }
+        free(path);
     }
 
-    free(path);
+    if(fh)
+        fclose(fh);
     return res;
 #endif
 }
