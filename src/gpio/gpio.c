@@ -505,6 +505,16 @@ mraa_gpio_chardev_init(int pins[], int num_pins)
     /* Initialize events array. */
     dev->events = NULL;
 
+    /*
+     * Single pin init
+     * Stay compatible to mraa_gpio_init()
+     */
+    if (num_pins == 1) {
+        dev->advance_func = board->adv_func;
+        dev->pin = pins[0];
+        dev->phy_pin = dev->pin;
+    }
+
     return dev;
 }
 
