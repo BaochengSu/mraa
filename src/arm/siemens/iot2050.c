@@ -65,6 +65,50 @@ iot2050_locate_phy_pin_by_name(mraa_board_t *board, char *pin_name)
     return -1;
 }
 
+static int
+iot2050_pin_to_name(int pin, char *name)
+{
+    int i, base, lines, offset, num_chips;
+    mraa_gpiod_line_info *linfo;
+    mraa_gpiod_chip_info* cinfo;
+
+    num_chips = mraa_get_number_of_gpio_chips();
+    if(num_chips < 0)
+        goto err;
+
+    for (i=0; i<num_chips; i++) {
+        base = mraa_get_chip_base_by_number(i);
+        if(base < 0){
+            syslog(LOG_ERR, "iot2050: mraa_get_chip_base_by_number failed: chip%d", i);
+            goto err;
+        }
+
+        cinfo = mraa_get_chip_info_by_number(i);
+        if(cinfo == NULL){
+            syslog(LOG_ERR, "iot2050: mraa_get_chip_info_by_number failed: chip%d", i);
+            goto err;
+        }
+
+        lines = cinfo->chip_info.lines;
+        close(cinfo->chip_fd);
+        free(cinfo);
+        if(pin >= base && pin < base + lines) {
+            offset = pin - base;
+            linfo = mraa_get_line_info_by_chip_number(i, offset);
+            if(linfo == NULL) {
+                syslog(LOG_ERR, "iot2050: mraa_get_line_info_by_chip_number(%d, %d) failed", i, offset);
+                goto err;
+            }
+            strncpy(name, linfo->name, MRAA_PIN_NAME_SIZE);
+            free(linfo);
+            return 0;
+        }
+    }
+err:
+    syslog(LOG_ERR, "iot2050: conversion from pin id to gpio-name failed: pin%d", pin);
+    return -1;
+}
+
 static inline regmux_info_t*
 iot2050_get_regmux_by_pinmap(int pinmap)
 {
