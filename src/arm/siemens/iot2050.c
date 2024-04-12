@@ -268,19 +268,26 @@ iot2050_gpio_dir_pre(mraa_gpio_context dev, mraa_gpio_dir_t dir)
                     goto failed;
                 }
             }
+
             if(dir == MRAA_GPIO_IN) {
                 syslog(LOG_DEBUG, "GPIODIR[phy_pin %d] gpio set out en %d to %d\n", pin, plat->pins[pin].gpio.output_enable, !plat->pins[pin].gpio.complex_cap.output_en_high);
                 if(mraa_gpio_write(output_en_pins[pin], !plat->pins[pin].gpio.complex_cap.output_en_high) != MRAA_SUCCESS) {
+                    mraa_gpio_close(output_en_pins[pin]);
+                    output_en_pins[pin] = NULL;
                     goto failed;
                 }
             } else {
                 syslog(LOG_DEBUG, "GPIODIR[phy_pin %d] gpio set out en %d to %d\n", pin, plat->pins[pin].gpio.output_enable, plat->pins[pin].gpio.complex_cap.output_en_high);
                 if(mraa_gpio_write(output_en_pins[pin], plat->pins[pin].gpio.complex_cap.output_en_high) != MRAA_SUCCESS) {
+                    mraa_gpio_close(output_en_pins[pin]);
+                    output_en_pins[pin] = NULL;
                     goto failed;
                 }
             }
         }
     }
+    mraa_gpio_close(output_en_pins[pin]);
+    output_en_pins[pin] = NULL;
     return MRAA_SUCCESS;
 failed:
     syslog(LOG_ERR, "iot2050: Error setting gpio direction");
@@ -363,6 +370,34 @@ failed:
     return ret;
 }
 
+static mraa_result_t
+iot2050_gpio_init_internal_replace(mraa_gpio_context dev, int pin)
+{
+    char pname[MRAA_PIN_NAME_SIZE];
+    mraa_gpio_context cdev;
+    mraa_result_t status;
+
+    syslog(LOG_DEBUG, "iot2050: iot2050_gpio_init_internal_replace (pin: %d)", pin);
+
+    status = iot2050_pin_to_name(dev->pin, pname);
+    if (status) {
+        syslog(LOG_ERR, "gpio%i: init: Failed to get pin name", pin);
+        return MRAA_ERROR_NO_DATA_AVAILABLE;
+    }
+
+    cdev = mraa_gpio_init_by_name(pname);
+    if (cdev == NULL) {
+        syslog(LOG_ERR, "gpio%i: init: Failed to initialize by name", pin);
+        return MRAA_ERROR_NO_RESOURCES;
+    }
+    memcpy(dev, cdev, sizeof(*cdev));
+    free(cdev);
+
+    dev->pin = pin;
+    dev->phy_pin = -1;
+
+    return MRAA_SUCCESS;
+}
 static inline void
 iot2050_setup_pins(mraa_board_t *board, int pin_index, char *pin_name, mraa_pincapabilities_t cap, regmux_info_t mux_info)
 {
@@ -588,7 +623,7 @@ mraa_siemens_iot2050()
     memset(output_en_pins, 0, sizeof(mraa_gpio_context) * MRAA_IOT2050_PINCOUNT);
     b->platform_name = PLATFORM_NAME;
     b->phy_pin_count = MRAA_IOT2050_PINCOUNT;
-    b->chardev_capable = 0;
+    b->chardev_capable = 1;
     b->adc_raw = 12;
     b->adc_supported = 12;
     b->pwm_default_period = 1000; /*us*/
@@ -599,6 +634,7 @@ mraa_siemens_iot2050()
     if(b->adv_func == NULL) {
         goto error;
     }
+    b->adv_func->gpio_init_internal_replace = &iot2050_gpio_init_internal_replace;
     b->adv_func->gpio_dir_pre = &iot2050_gpio_dir_pre;
     b->adv_func->gpio_mode_replace = &iot2050_gpio_mode_replace;
     b->adv_func->mux_init_reg = &iot2050_mux_init_reg;
