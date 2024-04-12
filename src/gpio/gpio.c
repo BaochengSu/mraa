@@ -1208,6 +1208,8 @@ mraa_gpio_chardev_dir(mraa_gpio_context dev, mraa_gpio_dir_t dir)
     }
 
     switch (dir) {
+        case MRAA_GPIO_OUT_HIGH:
+        case MRAA_GPIO_OUT_LOW:
         case MRAA_GPIO_OUT:
             flags |= GPIOHANDLE_REQUEST_OUTPUT;
             flags &= ~GPIOHANDLE_REQUEST_INPUT;
@@ -1235,6 +1237,15 @@ mraa_gpio_chardev_dir(mraa_gpio_context dev, mraa_gpio_dir_t dir)
         }
 
         gpio_iter->gpiod_handle = line_handle;
+    }
+
+    switch (dir) {
+        case MRAA_GPIO_OUT_LOW:
+            mraa_gpio_write(dev, 0);
+            break;
+        case MRAA_GPIO_OUT_HIGH:
+            mraa_gpio_write(dev, 1);
+            break;
     }
 
     return MRAA_SUCCESS;
