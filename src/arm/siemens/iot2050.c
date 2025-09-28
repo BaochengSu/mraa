@@ -881,7 +881,7 @@ mraa_siemens_iot2050()
     mux_info[1].pin = d4202_gpio_base+5;
     mux_info[1].pincmd = PINCMD_SET_DIRECTION;
     mux_info[1].value = MRAA_GPIO_IN;
-    iot2050_pin_add_pwm(b, pin_index, 2, 0, mux_info, 2);
+    iot2050_pin_add_pwm(b, pin_index, 1, 0, mux_info, 2);
     pin_index++;
 
     iot2050_setup_pins(b, pin_index, "IO6",
@@ -934,7 +934,7 @@ mraa_siemens_iot2050()
     mux_info[1].pin = d4202_gpio_base+6;
     mux_info[1].pincmd = PINCMD_SET_DIRECTION;
     mux_info[1].value = MRAA_GPIO_IN;
-    iot2050_pin_add_pwm(b, pin_index, 4, 0, mux_info, 2);
+    iot2050_pin_add_pwm(b, pin_index, 2, 0, mux_info, 2);
     pin_index++;
 
     iot2050_setup_pins(b, pin_index, "IO7",
@@ -987,7 +987,7 @@ mraa_siemens_iot2050()
     mux_info[1].pin = d4202_gpio_base+7;
     mux_info[1].pincmd = PINCMD_SET_DIRECTION;
     mux_info[1].value = MRAA_GPIO_IN;
-    iot2050_pin_add_pwm(b, pin_index, 6, 0, mux_info, 2);
+    iot2050_pin_add_pwm(b, pin_index, 3, 0, mux_info, 2);
     pin_index++;
 
     iot2050_setup_pins(b, pin_index, "IO8",
@@ -1040,7 +1040,7 @@ mraa_siemens_iot2050()
     mux_info[1].pin = d4202_gpio_base+8;
     mux_info[1].pincmd = PINCMD_SET_DIRECTION;
     mux_info[1].value = MRAA_GPIO_IN;
-    iot2050_pin_add_pwm(b, pin_index, 8, 0, mux_info, 2);
+    iot2050_pin_add_pwm(b, pin_index, 4, 0, mux_info, 2);
     pin_index++;
 
     iot2050_setup_pins(b, pin_index, "IO9",
@@ -1093,7 +1093,7 @@ mraa_siemens_iot2050()
     mux_info[1].pin = d4202_gpio_base+9;
     mux_info[1].pincmd = PINCMD_SET_DIRECTION;
     mux_info[1].value = MRAA_GPIO_IN;
-    iot2050_pin_add_pwm(b, pin_index, 10, 0, mux_info, 2);
+    iot2050_pin_add_pwm(b, pin_index, 5, 0, mux_info, 2);
     pin_index++;
 
     iot2050_setup_pins(b, pin_index, "IO10",
