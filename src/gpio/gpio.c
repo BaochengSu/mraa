@@ -154,8 +154,8 @@ mraa_gpio_init_by_name(char* name)
     mraa_gpiod_group_t gpio_group;
     mraa_gpiod_line_info* linfo = NULL;
     mraa_gpiod_chip_info* cinfo;
-    mraa_gpiod_chip_info** cinfos;
-    int i, line_found, line_offset;
+    mraa_gpiod_chip_info** cinfos = NULL;
+    int i, line_found, line_offset, chip_fd;
 
     if (name == NULL) {
         syslog(LOG_ERR, "[GPIOD_INTERFACE]: Gpio name not valid");
@@ -192,6 +192,10 @@ mraa_gpio_init_by_name(char* name)
     gpio_group = calloc(dev->num_chips, sizeof(struct _gpio_group));
     if (gpio_group == NULL) {
         syslog(LOG_CRIT, "[GPIOD_INTERFACE]: Failed to allocate memory for internal member");
+        for_each_gpio_chip(cinfo, cinfos, dev->num_chips) {
+            if (cinfo) close(cinfo->chip_fd);
+        }
+        free(cinfos);
         mraa_gpio_close(dev);
         return NULL;
     }
@@ -214,6 +218,7 @@ mraa_gpio_init_by_name(char* name)
                     gpio_group[idx].dev_fd = cinfo->chip_fd;
                     gpio_group[idx].is_required = 1;
                     gpio_group[idx].gpiod_handle = -1;
+                    chip_fd = gpio_group[idx].dev_fd;
                 }
 
                 /* Map pin to _gpio_group structure. */
@@ -225,13 +230,23 @@ mraa_gpio_init_by_name(char* name)
                 line_found = 1;
                 line_offset = i;
 
+                free(linfo);
                 break;
             }
+            free(linfo);
         }
     }
 
+    for_each_gpio_chip(cinfo, cinfos, dev->num_chips) {
+        if (!line_found || cinfo->chip_fd != chip_fd) {
+            close(cinfo->chip_fd);
+        }
+    }
+    free(cinfos);
+
     if (!line_found) {
         syslog(LOG_ERR, "[GPIOD_INTERFACE]: Gpio not found!");
+        mraa_gpio_close(dev);
         return NULL;
     }
 

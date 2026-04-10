@@ -495,6 +495,7 @@ mraa_find_gpio_line_by_name(const char *name, unsigned *chip_number, unsigned *l
     mraa_gpiod_chip_info *cinfo;
     mraa_gpiod_line_info *linfo;
     int num_chips, i;
+    int ret = -1;
 
     num_chips = mraa_get_chip_infos(&cinfos);
     if (num_chips < 0) {
@@ -516,14 +517,18 @@ mraa_find_gpio_line_by_name(const char *name, unsigned *chip_number, unsigned *l
                 }
 
                 free(linfo);
-                free(cinfos);
-                return 0;
+                ret = 0;
+                goto out;
             }
 
             free(linfo);
         }
     }
 
+out:
+    for_each_gpio_chip(cinfo, cinfos, num_chips) {
+        if (cinfo) close(cinfo->chip_fd);
+    }
     free(cinfos);
-    return -1;
+    return ret;
 }
