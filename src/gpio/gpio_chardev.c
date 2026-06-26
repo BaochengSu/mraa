@@ -370,10 +370,23 @@ int
 mraa_set_line_values(int line_handle, unsigned int num_lines, unsigned char input_values[])
 {
     int status;
+    struct gpio_v2_line_values v2_data;
     struct gpiohandle_data __hdata;
 
-    memcpy(__hdata.values, input_values, num_lines * sizeof(unsigned char));
+    v2_data.bits = 0;
+    v2_data.mask = 0;
+    for (unsigned int i = 0; i < num_lines; i++) {
+        if (input_values[i])
+            v2_data.bits |= (1ULL << i);
+        v2_data.mask |= (1ULL << i);
+    }
 
+    status = _mraa_gpiod_ioctl(line_handle, GPIO_V2_LINE_SET_VALUES_IOCTL, &v2_data);
+    if (status == 0 || (status < 0 && errno != ENOTTY)) {
+        return status;
+    }
+
+    memcpy(__hdata.values, input_values, num_lines * sizeof(unsigned char));
     status = _mraa_gpiod_ioctl(line_handle, GPIOHANDLE_SET_LINE_VALUES_IOCTL, &__hdata);
     if (status < 0) {
         syslog(LOG_ERR, "[GPIOD_INTERFACE]: ioctl() fail");
@@ -386,7 +399,23 @@ int
 mraa_get_line_values(int line_handle, unsigned int num_lines, unsigned char output_values[])
 {
     int status;
+    struct gpio_v2_line_values v2_data;
     struct gpiohandle_data __hdata;
+
+    v2_data.mask = 0;
+    for (unsigned int i = 0; i < num_lines; i++)
+        v2_data.mask |= (1ULL << i);
+
+    status = _mraa_gpiod_ioctl(line_handle, GPIO_V2_LINE_GET_VALUES_IOCTL, &v2_data);
+    if (status >= 0) {
+        for (unsigned int i = 0; i < num_lines; i++)
+            output_values[i] = (v2_data.bits >> i) & 1;
+        return status;
+    }
+    if (status < 0 && errno != ENOTTY) {
+        syslog(LOG_ERR, "[GPIOD_INTERFACE]: ioctl() fail");
+        return status;
+    }
 
     status = _mraa_gpiod_ioctl(line_handle, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &__hdata);
     if (status < 0) {

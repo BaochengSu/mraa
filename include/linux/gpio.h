@@ -78,4 +78,59 @@ struct gpioevent_data {
 #define GPIO_GET_LINEHANDLE_IOCTL _IOWR(0xB4, 0x03, struct gpiohandle_request)
 #define GPIO_GET_LINEEVENT_IOCTL _IOWR(0xB4, 0x04, struct gpioevent_request)
 
+/*
+ * GPIO v2 UAPI definitions (Linux 5.10+)
+ * Based on the kernel's include/uapi/linux/gpio.h
+ */
+#define GPIO_V2_LINE_FLAG_INPUT                (1UL << 0)
+#define GPIO_V2_LINE_FLAG_OUTPUT               (1UL << 1)
+#define GPIO_V2_LINE_FLAG_ACTIVE_LOW           (1UL << 2)
+#define GPIO_V2_LINE_FLAG_OPEN_DRAIN           (1UL << 3)
+#define GPIO_V2_LINE_FLAG_OPEN_SOURCE          (1UL << 4)
+#define GPIO_V2_LINE_FLAG_BIAS_PULL_UP         (1UL << 5)
+#define GPIO_V2_LINE_FLAG_BIAS_PULL_DOWN       (1UL << 6)
+#define GPIO_V2_LINE_FLAG_BIAS_DISABLED        (1UL << 7)
+#define GPIO_V2_LINE_FLAG_EDGE_RISING          (1UL << 8)
+#define GPIO_V2_LINE_FLAG_EDGE_FALLING         (1UL << 9)
+
+#define GPIO_V2_LINES_MAX 64
+
+struct gpio_v2_line_values {
+    __u64 bits;
+    __u64 mask;
+};
+
+struct gpio_v2_line_attribute {
+    __u32 id;
+    __u32 padding;
+    __u64 value;
+};
+
+struct gpio_v2_line_config_attribute {
+    struct gpio_v2_line_attribute attr;
+    __u64 mask;
+};
+
+struct gpio_v2_line_config {
+    __u64 flags;
+    __u32 num_attrs;
+    __u32 padding[5];
+    struct gpio_v2_line_config_attribute attrs[10];
+};
+
+struct gpio_v2_line_request {
+    __u32 offsets[GPIO_V2_LINES_MAX];
+    char consumer[32];
+    struct gpio_v2_line_config config;
+    __u32 num_lines;
+    __u32 event_buffer_size;
+    __u32 padding[5];
+    int fd;
+};
+
+#define GPIO_V2_GET_LINE_IOCTL _IOWR(0xB4, 0x06, struct gpio_v2_line_request)
+#define GPIO_V2_LINE_GET_VALUES_IOCTL _IOWR(0xB4, 0x0E, struct gpio_v2_line_values)
+#define GPIO_V2_LINE_SET_VALUES_IOCTL _IOWR(0xB4, 0x0F, struct gpio_v2_line_values)
+#define GPIO_V2_LINE_SET_CONFIG_IOCTL _IOW(0xB4, 0x0D, struct gpio_v2_line_config)
+
 #endif /* _GPIO_H_ */
