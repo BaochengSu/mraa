@@ -109,6 +109,10 @@ _mraa_close_gpio_desc(mraa_gpio_context dev)
 {
     mraa_gpiod_group_t gpio_iter;
 
+    if (plat->chardev_capable == 2) {
+        return;
+    }
+
     for_each_gpio_group(gpio_iter, dev)
     {
         if (gpio_iter->gpiod_handle != -1) {
@@ -277,7 +281,7 @@ mraa_get_chip_base_by_number(unsigned number)
         free(path);
     }
 
-    if(fh)
+    if (fh)
         fclose(fh);
     return res;
 #endif
@@ -489,11 +493,11 @@ mraa_get_chip_infos(mraa_gpiod_chip_info*** cinfos)
 #endif
 
 int
-mraa_find_gpio_line_by_name(const char *name, unsigned *chip_number, unsigned *line_number)
+mraa_find_gpio_line_by_name(const char* name, unsigned* chip_number, unsigned* line_number)
 {
-    mraa_gpiod_chip_info **cinfos;
-    mraa_gpiod_chip_info *cinfo;
-    mraa_gpiod_line_info *linfo;
+    mraa_gpiod_chip_info** cinfos;
+    mraa_gpiod_chip_info* cinfo;
+    mraa_gpiod_line_info* linfo;
     int num_chips, i;
     int ret = -1;
 
@@ -502,7 +506,8 @@ mraa_find_gpio_line_by_name(const char *name, unsigned *chip_number, unsigned *l
         return -1;
     }
 
-    for_each_gpio_chip(cinfo, cinfos, num_chips) {
+    for_each_gpio_chip(cinfo, cinfos, num_chips)
+    {
         for (i = 0; i < cinfo->chip_info.lines; i++) {
             linfo = mraa_get_line_info_by_chip_name(cinfo->chip_info.name, i);
 
@@ -526,8 +531,10 @@ mraa_find_gpio_line_by_name(const char *name, unsigned *chip_number, unsigned *l
     }
 
 out:
-    for_each_gpio_chip(cinfo, cinfos, num_chips) {
-        if (cinfo) close(cinfo->chip_fd);
+    for_each_gpio_chip(cinfo, cinfos, num_chips)
+    {
+        if (cinfo)
+            close(cinfo->chip_fd);
     }
     free(cinfos);
     return ret;

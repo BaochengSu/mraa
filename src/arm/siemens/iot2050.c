@@ -306,7 +306,7 @@ iot2050_gpio_mode_replace(mraa_gpio_context dev, mraa_gpio_mode_t mode)
         ret = MRAA_ERROR_INVALID_RESOURCE;
         goto failed;
     }
-    /* Handle mode changes for interface pins without pull pin */
+    /* Handle mode changes for interface pins without pull pin */ // TODO: change here
     if (pull_en_pins[dev->phy_pin] == -1) {
         return (mode == MRAA_GPIO_STRONG || mode == MRAA_GPIO_HIZ) ?
             MRAA_SUCCESS : MRAA_ERROR_FEATURE_NOT_IMPLEMENTED;
@@ -377,7 +377,7 @@ iot2050_gpio_init_internal_replace(mraa_gpio_context dev, int pin)
     mraa_gpio_context cdev;
     mraa_result_t status;
 
-    syslog(LOG_DEBUG, "iot2050: iot2050_gpio_init_internal_replace (pin: %d)", pin);
+    syslog(LOG_ERR, "iot2050: iot2050_gpio_init_internal_replace (pin: %d)", pin);
 
     status = iot2050_pin_to_name(dev->pin, pname);
     if (status) {
@@ -623,7 +623,7 @@ mraa_siemens_iot2050()
     memset(output_en_pins, 0, sizeof(mraa_gpio_context) * MRAA_IOT2050_PINCOUNT);
     b->platform_name = PLATFORM_NAME;
     b->phy_pin_count = MRAA_IOT2050_PINCOUNT;
-    b->chardev_capable = 1;
+    b->chardev_capable = 2;
     b->adc_raw = 12;
     b->adc_supported = 12;
     b->pwm_default_period = 1000; /*us*/

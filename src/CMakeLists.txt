@@ -24,6 +24,7 @@ set (mraa_LIB_SRCS_NOAUTO
   ${PROJECT_SOURCE_DIR}/src/mraa.c
   ${PROJECT_SOURCE_DIR}/src/gpio/gpio.c
   ${PROJECT_SOURCE_DIR}/src/gpio/gpio_chardev.c
+  ${PROJECT_SOURCE_DIR}/src/gpio/gpio_chardev_v2.c
   ${PROJECT_SOURCE_DIR}/src/i2c/i2c.c
   ${PROJECT_SOURCE_DIR}/src/pwm/pwm.c
   ${PROJECT_SOURCE_DIR}/src/spi/spi.c

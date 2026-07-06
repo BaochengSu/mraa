@@ -7,6 +7,7 @@
  */
 #include "gpio.h"
 #include "gpio/gpio_chardev.h"
+#include "gpio/gpio_chardev_v2.h"
 #include "linux/gpio.h"
 #include "mraa_internal.h"
 
@@ -50,14 +51,17 @@ mraa_gpio_close_event_handles_sysfs(int fds[], int num_fds)
         return;
     }
 
-    for (int i = 0; i < num_fds; ++i) {
-        // Check required to avoid closing stdin and of an uninitialized fd
-        if (fds[i] != 0) {
-            close(fds[i]);
+    if (plat->chardev_capable != 2) {
+        // Do nothing for V2, as the line_request_fd is closed in _mraa_free_gpio_groups
+        for (int i = 0; i < num_fds; ++i) {
+            // Check required to avoid closing stdin and of an uninitialized fd
+            if (fds[i] != 0) {
+                close(fds[i]);
+            }
         }
-    }
 
-    free(fds);
+        free(fds);
+    }
 }
 
 static mraa_gpio_context
@@ -149,23 +153,45 @@ init_internal_cleanup:
 mraa_gpio_context
 mraa_gpio_init_by_name(char* name)
 {
-    mraa_board_t* board = plat;
+    unsigned int chardev_api_ver = plat->chardev_capable;
+    unsigned chip_number, line_offset;
     mraa_gpio_context dev;
-    mraa_gpiod_group_t gpio_group;
-    mraa_gpiod_line_info* linfo = NULL;
-    mraa_gpiod_chip_info* cinfo;
-    mraa_gpiod_chip_info** cinfos = NULL;
-    int i, line_found, line_offset, chip_fd;
+    int chip_fd, ret;
 
     if (name == NULL) {
         syslog(LOG_ERR, "[GPIOD_INTERFACE]: Gpio name not valid");
         return NULL;
     }
 
-    if (!board->chardev_capable) {
+    if (!chardev_api_ver) {
         syslog(LOG_ERR, "[GPIOD_INTERFACE]: gpio_init_by_name not available for this platform!");
         return NULL;
     }
+
+    switch (chardev_api_ver) {
+        case 1:
+            ret = mraa_find_gpio_line_by_name(name, &chip_number, &line_offset);
+            break;
+        case 2:
+            ret = mraa_gpiod_find_gpio_line_by_name(name, &chip_number, &line_offset);
+            break;
+        default:
+            syslog(LOG_ERR, "[GPIOD_INTERFACE]: Invalid chardev_api_ver value: %d", chardev_api_ver);
+            return NULL;
+    }
+
+    if (ret < 0) {
+        syslog(LOG_ERR, "[GPIOD_INTERFACE]: Gpio name not found");
+        return NULL;
+    }
+
+    mraa_gpiod_chip_info* cinfo = mraa_get_chip_info_by_number(chip_number);
+    if (cinfo == NULL) {
+        syslog(LOG_ERR, "[GPIOD_INTERFACE]: Failed to get chip info for chip number %u", chip_number);
+        return NULL;
+    }
+    chip_fd = cinfo->chip_fd;
+    free(cinfo);
 
     dev = (mraa_gpio_context) calloc(1, sizeof(struct _gpio));
     if (dev == NULL) {
@@ -180,86 +206,51 @@ mraa_gpio_init_by_name(char* name)
         return NULL;
     }
 
-    dev->num_chips = mraa_get_chip_infos(&cinfos);
-    if (dev->num_chips <= 0) {
-        mraa_gpio_close(dev);
-        return NULL;
-    }
-
     /* We are dealing with a single GPIO */
+    dev->num_chips = 1;
     dev->num_pins = 1;
 
-    gpio_group = calloc(dev->num_chips, sizeof(struct _gpio_group));
-    if (gpio_group == NULL) {
+    dev->gpio_group = calloc(1, sizeof(struct _gpio_group));
+    if (dev->gpio_group == NULL) {
         syslog(LOG_CRIT, "[GPIOD_INTERFACE]: Failed to allocate memory for internal member");
-        for_each_gpio_chip(cinfo, cinfos, dev->num_chips) {
-            if (cinfo) close(cinfo->chip_fd);
-        }
-        free(cinfos);
         mraa_gpio_close(dev);
         return NULL;
     }
 
-    dev->gpio_group = gpio_group;
-    for (i = 0; i < dev->num_chips; ++i) {
-        gpio_group[i].gpio_chip = i;
-        gpio_group[i].gpio_lines = NULL;
-    }
-
-    /* Iterate over all gpiochips in the platform to find the requested line */
-    for_each_gpio_chip(cinfo, cinfos, dev->num_chips)
-    {
-        for (i = 0; i < cinfo->chip_info.lines; i++) {
-            linfo = mraa_get_line_info_by_chip_name(cinfo->chip_info.name, i);
-            if (!strncmp(linfo->name, name, 32)) {
-                /* idx is coming from `for_each_gpio_chip` definition */
-                syslog(LOG_DEBUG, "[GPIOD_INTERFACE]: Chip: %d Line: %d", idx, i);
-                if (!gpio_group[idx].is_required) {
-                    gpio_group[idx].dev_fd = cinfo->chip_fd;
-                    gpio_group[idx].is_required = 1;
-                    gpio_group[idx].gpiod_handle = -1;
-                    chip_fd = gpio_group[idx].dev_fd;
-                }
-
-                /* Map pin to _gpio_group structure. */
-                dev->pin_to_gpio_table[0] = idx;
-                gpio_group[idx].gpio_lines = realloc(gpio_group[idx].gpio_lines, sizeof(unsigned int));
-                gpio_group[idx].gpio_lines[0] = i;
-                gpio_group[idx].num_gpio_lines++;
-
-                line_found = 1;
-                line_offset = i;
-
-                free(linfo);
-                break;
-            }
-            free(linfo);
-        }
-    }
-
-    for_each_gpio_chip(cinfo, cinfos, dev->num_chips) {
-        if (!line_found || cinfo->chip_fd != chip_fd) {
-            close(cinfo->chip_fd);
-        }
-    }
-    free(cinfos);
-
-    if (!line_found) {
-        syslog(LOG_ERR, "[GPIOD_INTERFACE]: Gpio not found!");
+    dev->gpio_group->is_required = 1;
+    dev->gpio_group->dev_fd = chip_fd;
+    dev->gpio_group->gpio_chip = chip_number;
+    dev->gpio_group->gpio_lines = calloc(1, sizeof(unsigned int));
+    if (dev->gpio_group->gpio_lines == NULL) {
+        syslog(LOG_CRIT, "[GPIOD_INTERFACE]: Failed to allocate memory for internal member");
         mraa_gpio_close(dev);
         return NULL;
     }
+    *dev->gpio_group->gpio_lines = line_offset;
+    dev->gpio_group->num_gpio_lines = 1;
 
-    /* Initialize rw_values for read / write multiple functions */
-    for (i = 0; i < dev->num_chips; ++i) {
-        gpio_group[i].rw_values = calloc(gpio_group[i].num_gpio_lines, sizeof(unsigned char));
-        if (gpio_group[i].rw_values == NULL) {
-            syslog(LOG_CRIT, "[GPIOD_INTERFACE]: Failed to allocate memory for internal member");
+    if (chardev_api_ver == 1) {
+        dev->gpio_group->gpiod_handle = -1;
+        dev->gpio_group->event_handles = NULL;
+    } else {
+        int line_request_fd = mraa_gpiod_get_lines_request(chip_fd, dev->gpio_group->gpio_lines, 1);
+        if (line_request_fd < 0) {
+            syslog(LOG_ERR, "[GPIOD_INTERFACE]: error requesting lines for chip %d", chip_number);
             mraa_gpio_close(dev);
             return NULL;
         }
 
-        gpio_group[i].event_handles = NULL;
+        dev->gpio_group->line_request_fd = line_request_fd;
+    }
+
+    dev->pin_to_gpio_table[0] = 0; /* Map the single pin to the first (and only) gpio group */
+
+    /* Initialize rw_values for read / write multiple functions */
+    dev->gpio_group->rw_values = calloc(1, sizeof(unsigned char));
+    if (dev->gpio_group->rw_values == NULL) {
+        syslog(LOG_CRIT, "[GPIOD_INTERFACE]: Failed to allocate memory for internal member");
+        mraa_gpio_close(dev);
+        return NULL;
     }
 
     /* Save the provided array from the user to our internal structure. */
@@ -351,7 +342,7 @@ mraa_gpio_init(int pin)
 }
 
 mraa_gpio_context
-mraa_gpio_chardev_init(int pins[], int num_pins)
+mraa_gpio_chardev_init(int pins[], int num_pins, unsigned int chardev_ver)
 {
     int chip_id, line_offset;
     mraa_gpio_context dev;
@@ -390,6 +381,7 @@ mraa_gpio_chardev_init(int pins[], int num_pins)
     dev->gpio_group = gpio_group;
 
     for (int i = 0; i < dev->num_chips; ++i) {
+        // gpio_group[i].api_ver = chardev_ver;
         gpio_group[i].gpio_chip = i;
         /* Just to be sure realloc has the desired behaviour. */
         gpio_group[i].gpio_lines = NULL;
@@ -451,7 +443,9 @@ mraa_gpio_chardev_init(int pins[], int num_pins)
 
             gpio_group[chip_id].dev_fd = cinfo->chip_fd;
             gpio_group[chip_id].is_required = 1;
-            gpio_group[chip_id].gpiod_handle = -1;
+            if (chardev_ver == 1) {
+                gpio_group[chip_id].gpiod_handle = -1;
+            }
 
             free(cinfo);
         }
@@ -468,6 +462,23 @@ mraa_gpio_chardev_init(int pins[], int num_pins)
 
         gpio_group[chip_id].gpio_lines[line_in_group] = line_offset;
         gpio_group[chip_id].num_gpio_lines++;
+    }
+
+    if (chardev_ver == 2) {
+        for (int i = 0; i < dev->num_chips; ++i) {
+            if (gpio_group[i].is_required) {
+                int line_request_fd =
+                mraa_gpiod_get_lines_request(gpio_group[i].dev_fd, gpio_group[i].gpio_lines,
+                                             gpio_group[i].num_gpio_lines);
+                if (line_request_fd < 0) {
+                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error requesting lines for chip %d", gpio_group[i].gpio_chip);
+                    mraa_gpio_close(dev);
+                    return NULL;
+                }
+
+                gpio_group[i].line_request_fd = line_request_fd;
+            }
+        }
     }
 
     /* Initialize rw_values for read / write multiple functions.
@@ -544,7 +555,7 @@ mraa_gpio_init_multi(int pins[], int num_pins)
     }
 
     if (board->chardev_capable)
-        return mraa_gpio_chardev_init(pins, num_pins);
+        return mraa_gpio_chardev_init(pins, num_pins, board->chardev_capable);
 
     /* Fallback to legacy interface. */
     mraa_gpio_context head = NULL, current, tmp;
@@ -652,12 +663,17 @@ mraa_gpio_wait_interrupt(int fds[],
 static mraa_result_t
 mraa_gpio_chardev_wait_interrupt(int fds[], int num_fds, mraa_gpio_events_t events)
 {
-    struct pollfd pfd[num_fds];
-    struct gpioevent_data event_data;
-
     if (!fds) {
         return MRAA_ERROR_INVALID_PARAMETER;
     }
+
+    struct gpio_v2_line_event event_v2;
+    struct gpioevent_data event_v1;
+    struct pollfd pfd[num_fds];
+    int ret;
+
+    memset(&event_v2, 0, sizeof(event_v2));
+    memset(&event_v1, 0, sizeof(event_v1));
 
     for (int i = 0; i < num_fds; ++i) {
         pfd[i].fd = fds[i];
@@ -670,11 +686,26 @@ mraa_gpio_chardev_wait_interrupt(int fds[], int num_fds, mraa_gpio_events_t even
 
     for (int i = 0; i < num_fds; ++i) {
         if (pfd[i].revents & POLLIN) {
-            read(fds[i], &event_data, sizeof(event_data));
+            void* event_buf;
+            size_t event_buf_size;
+            if (plat->chardev_capable == 2) {
+                event_buf = &event_v2;
+                event_buf_size = sizeof(event_v2);
+            } else {
+                event_buf = &event_v1;
+                event_buf_size = sizeof(event_v1);
+            }
+
+            ret = read(fds[i], event_buf, event_buf_size);
             events[i].id = i;
-            events[i].timestamp = event_data.timestamp;
-        } else
+            if (plat->chardev_capable == 2) {
+                events[i].timestamp = event_v2.timestamp_ns;
+            } else {
+                events[i].timestamp = event_v1.timestamp;
+            }
+        } else {
             events[i].id = -1;
+        }
     }
 
     return MRAA_SUCCESS;
@@ -752,8 +783,12 @@ mraa_gpio_interrupt_handler(void* arg)
 
         for_each_gpio_group(gpio_group, dev)
         {
-            for (int i = 0; i < gpio_group->num_gpio_lines; ++i) {
-                fps[idx++] = gpio_group->event_handles[i];
+            if (plat->chardev_capable == 2) {
+                fps[idx++] = gpio_group->line_request_fd;
+            } else {
+                for (int i = 0; i < gpio_group->num_gpio_lines; ++i) {
+                    fps[idx++] = gpio_group->event_handles[i];
+                }
             }
         }
     }
@@ -860,48 +895,116 @@ mraa_gpio_chardev_edge_mode(mraa_gpio_context dev, mraa_gpio_edge_t mode)
     int status;
     mraa_gpiod_group_t gpio_group;
 
-    struct gpioevent_request req;
+    if (plat->chardev_capable == 2) {
+        for_each_gpio_group(gpio_group, dev)
+        {
+            unsigned long flags = 0;
 
-    switch (mode) {
-        case MRAA_GPIO_EDGE_BOTH:
-            req.eventflags = GPIOEVENT_REQUEST_BOTH_EDGES;
-            break;
-        case MRAA_GPIO_EDGE_RISING:
-            req.eventflags = GPIOEVENT_REQUEST_RISING_EDGE;
-            break;
-        case MRAA_GPIO_EDGE_FALLING:
-            req.eventflags = GPIOEVENT_REQUEST_FALLING_EDGE;
-            break;
-        /* Chardev interface doesn't handle EDGE_NONE. */
-        case MRAA_GPIO_EDGE_NONE:
-        default:
-            return MRAA_ERROR_FEATURE_NOT_IMPLEMENTED;
-    }
-
-    for_each_gpio_group(gpio_group, dev)
-    {
-        if (gpio_group->gpiod_handle != -1) {
-            close(gpio_group->gpiod_handle);
-            gpio_group->gpiod_handle = -1;
-        }
-
-        gpio_group->event_handles = malloc(gpio_group->num_gpio_lines * sizeof(int));
-        if (!gpio_group->event_handles) {
-            syslog(LOG_ERR, "mraa_gpio_chardev_edge_mode(): malloc error!");
-            return MRAA_ERROR_NO_RESOURCES;
-        }
-
-        for (int i = 0; i < gpio_group->num_gpio_lines; ++i) {
-            req.lineoffset = gpio_group->gpio_lines[i];
-            req.handleflags = GPIOHANDLE_REQUEST_INPUT;
-
-            status = _mraa_gpiod_ioctl(gpio_group->dev_fd, GPIO_GET_LINEEVENT_IOCTL, &req);
-            if (status < 0) {
-                syslog(LOG_ERR, "error getting line event handle for line %i", gpio_group->gpio_lines[i]);
+            int ret = mraa_gpiod_get_line_flags(gpio_group->dev_fd, gpio_group->gpio_lines[0], &flags);
+            if (ret != 0) {
+                syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting line flags");
                 return MRAA_ERROR_INVALID_RESOURCE;
             }
 
-            gpio_group->event_handles[i] = req.fd;
+            flags &= ~GPIO_V2_LINE_FLAG_USED;
+
+            if ((flags & GPIO_V2_LINE_FLAG_INPUT) == 0) {
+                syslog(LOG_ERR, "[GPIOD_INTERFACE]: error setting line input mode. Line is not "
+                                "configured as input.");
+                return MRAA_ERROR_INVALID_RESOURCE;
+            }
+
+            switch (mode) {
+                case MRAA_GPIO_EDGE_BOTH:
+                    if ((flags & GPIO_V2_LINE_FLAG_EDGE_RISING) && (flags & GPIO_V2_LINE_FLAG_EDGE_FALLING)) {
+                        syslog(LOG_DEBUG,
+                               "[GPIOD_INTERFACE]: line already configured for both edges");
+                        return MRAA_SUCCESS;
+                    }
+                    flags |= (GPIO_V2_LINE_FLAG_EDGE_RISING | GPIO_V2_LINE_FLAG_EDGE_FALLING);
+                    break;
+                case MRAA_GPIO_EDGE_RISING:
+                    if ((flags & GPIO_V2_LINE_FLAG_EDGE_RISING) && !(flags & GPIO_V2_LINE_FLAG_EDGE_FALLING)) {
+                        syslog(LOG_DEBUG,
+                               "[GPIOD_INTERFACE]: line already configured for rising edge");
+                        return MRAA_SUCCESS;
+                    }
+                    flags |= GPIO_V2_LINE_FLAG_EDGE_RISING;
+                    flags &= ~GPIO_V2_LINE_FLAG_EDGE_FALLING;
+                    break;
+                case MRAA_GPIO_EDGE_FALLING:
+                    if ((flags & GPIO_V2_LINE_FLAG_EDGE_FALLING) && !(flags & GPIO_V2_LINE_FLAG_EDGE_RISING)) {
+                        syslog(LOG_DEBUG,
+                               "[GPIOD_INTERFACE]: line already configured for falling edge");
+                        return MRAA_SUCCESS;
+                    }
+                    flags |= GPIO_V2_LINE_FLAG_EDGE_FALLING;
+                    flags &= ~GPIO_V2_LINE_FLAG_EDGE_RISING;
+                    break;
+                case MRAA_GPIO_EDGE_NONE:
+                    if (!(flags & GPIO_V2_LINE_FLAG_EDGE_RISING) && !(flags & GPIO_V2_LINE_FLAG_EDGE_FALLING)) {
+                        syslog(LOG_DEBUG,
+                               "[GPIOD_INTERFACE]: line already configured for no edge detection");
+                        return MRAA_SUCCESS;
+                    }
+                    flags &= ~(GPIO_V2_LINE_FLAG_EDGE_RISING | GPIO_V2_LINE_FLAG_EDGE_FALLING);
+                    break;
+                default:
+                    return MRAA_ERROR_FEATURE_NOT_IMPLEMENTED;
+            }
+
+            // TODO: clean the kernel events buffer
+
+            ret = mraa_gpiod_reconfig_lines(gpio_group->line_request_fd, flags);
+            if (ret != 0) {
+                syslog(LOG_ERR, "[GPIOD_INTERFACE]: error reconfiguring line flags: %d", ret);
+                return MRAA_ERROR_INVALID_RESOURCE;
+            }
+        }
+    } else {
+        struct gpioevent_request req;
+
+        switch (mode) {
+            case MRAA_GPIO_EDGE_BOTH:
+                req.eventflags = GPIOEVENT_REQUEST_BOTH_EDGES;
+                break;
+            case MRAA_GPIO_EDGE_RISING:
+                req.eventflags = GPIOEVENT_REQUEST_RISING_EDGE;
+                break;
+            case MRAA_GPIO_EDGE_FALLING:
+                req.eventflags = GPIOEVENT_REQUEST_FALLING_EDGE;
+                break;
+            /* Chardev interface doesn't handle EDGE_NONE. */
+            case MRAA_GPIO_EDGE_NONE:
+            default:
+                return MRAA_ERROR_FEATURE_NOT_IMPLEMENTED;
+        }
+
+        for_each_gpio_group(gpio_group, dev)
+        {
+            if (gpio_group->gpiod_handle != -1) {
+                close(gpio_group->gpiod_handle);
+                gpio_group->gpiod_handle = -1;
+            }
+
+            gpio_group->event_handles = malloc(gpio_group->num_gpio_lines * sizeof(int));
+            if (!gpio_group->event_handles) {
+                syslog(LOG_ERR, "mraa_gpio_chardev_edge_mode(): malloc error!");
+                return MRAA_ERROR_NO_RESOURCES;
+            }
+
+            for (int i = 0; i < gpio_group->num_gpio_lines; ++i) {
+                req.lineoffset = gpio_group->gpio_lines[i];
+                req.handleflags = GPIOHANDLE_REQUEST_INPUT;
+
+                status = _mraa_gpiod_ioctl(gpio_group->dev_fd, GPIO_GET_LINEEVENT_IOCTL, &req);
+                if (status < 0) {
+                    syslog(LOG_ERR, "error getting line event handle for line %i", gpio_group->gpio_lines[i]);
+                    return MRAA_ERROR_INVALID_RESOURCE;
+                }
+
+                gpio_group->event_handles[i] = req.fd;
+            }
         }
     }
 
@@ -1102,7 +1205,7 @@ mraa_gpio_mode(mraa_gpio_context dev, mraa_gpio_mode_t mode)
     }
 
     if (plat->chardev_capable) {
-        unsigned flags = 0;
+        unsigned long flags = 0;
         int line_handle;
         mraa_gpiod_group_t gpio_iter;
 
@@ -1111,44 +1214,87 @@ mraa_gpio_mode(mraa_gpio_context dev, mraa_gpio_mode_t mode)
         /* We save flag values from the first valid line. */
         for_each_gpio_group(gpio_iter, dev)
         {
-            mraa_gpiod_line_info* linfo =
-            mraa_get_line_info_by_chip_number(gpio_iter->gpio_chip, gpio_iter->gpio_lines[0]);
-            if (!linfo) {
-                syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting line info");
-                return MRAA_ERROR_UNSPECIFIED;
+            if (plat->chardev_capable == 2) {
+                int ret = mraa_gpiod_get_line_flags(gpio_iter->dev_fd, gpio_iter->gpio_lines[0], &flags);
+                if (ret != 0) {
+                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting line flags");
+                    return MRAA_ERROR_INVALID_RESOURCE;
+                }
+                flags &= ~GPIO_V2_LINE_FLAG_USED;
+            } else {
+                mraa_gpiod_line_info* linfo =
+                mraa_get_line_info_by_chip_number(gpio_iter->gpio_chip, gpio_iter->gpio_lines[0]);
+                if (!linfo) {
+                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting line info");
+                    return MRAA_ERROR_UNSPECIFIED;
+                }
+                flags = linfo->flags;
+                free(linfo);
             }
-            flags = linfo->flags;
-            free(linfo);
 
             /* We don't need to iterate any further. */
             break;
         }
 
         /* Without changing the API, for now, we can request only one mode per call. */
-        switch (mode) {
-            case MRAA_GPIOD_ACTIVE_LOW:
-                flags |= GPIOHANDLE_REQUEST_ACTIVE_LOW;
-                break;
-            case MRAA_GPIOD_OPEN_DRAIN:
-                flags |= GPIOHANDLE_REQUEST_OPEN_DRAIN;
-                break;
-            case MRAA_GPIOD_OPEN_SOURCE:
-                flags |= GPIOHANDLE_REQUEST_OPEN_SOURCE;
-                break;
-            default:
-                return MRAA_ERROR_FEATURE_NOT_IMPLEMENTED;
+        if (plat->chardev_capable == 2) {
+            switch (mode) {
+                case MRAA_GPIO_PULLUP:
+                    flags |= GPIO_V2_LINE_FLAG_BIAS_PULL_UP;
+                    break;
+                case MRAA_GPIO_PULLDOWN:
+                    flags |= GPIO_V2_LINE_FLAG_BIAS_PULL_DOWN;
+                    break;
+                case MRAA_GPIO_STRONG:
+                case MRAA_GPIO_HIZ:
+                    flags |= GPIO_V2_LINE_FLAG_BIAS_DISABLED;
+                    break;
+                case MRAA_GPIOD_ACTIVE_LOW:
+                    flags |= GPIO_V2_LINE_FLAG_ACTIVE_LOW;
+                    break;
+                case MRAA_GPIOD_OPEN_DRAIN:
+                    flags |= GPIO_V2_LINE_FLAG_OPEN_DRAIN;
+                    break;
+                case MRAA_GPIOD_OPEN_SOURCE:
+                    flags |= GPIO_V2_LINE_FLAG_OPEN_SOURCE;
+                    break;
+                default:
+                    return MRAA_ERROR_FEATURE_NOT_IMPLEMENTED;
+            }
+        } else {
+            switch (mode) {
+                case MRAA_GPIOD_ACTIVE_LOW:
+                    flags |= GPIOHANDLE_REQUEST_ACTIVE_LOW;
+                    break;
+                case MRAA_GPIOD_OPEN_DRAIN:
+                    flags |= GPIOHANDLE_REQUEST_OPEN_DRAIN;
+                    break;
+                case MRAA_GPIOD_OPEN_SOURCE:
+                    flags |= GPIOHANDLE_REQUEST_OPEN_SOURCE;
+                    break;
+                default:
+                    return MRAA_ERROR_FEATURE_NOT_IMPLEMENTED;
+            }
         }
 
         for_each_gpio_group(gpio_iter, dev)
         {
-            line_handle = mraa_get_lines_handle(gpio_iter->dev_fd, gpio_iter->gpio_lines,
-                                                gpio_iter->num_gpio_lines, flags, 0);
-            if (line_handle <= 0) {
-                syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting line handle");
-                return MRAA_ERROR_INVALID_RESOURCE;
-            }
+            if (plat->chardev_capable == 2) {
+                int ret = mraa_gpiod_reconfig_lines(gpio_iter->line_request_fd, flags);
+                if (ret != 0) {
+                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error reconfiguring line flags: %d", ret);
+                    return MRAA_ERROR_INVALID_RESOURCE;
+                }
+            } else {
+                line_handle = mraa_get_lines_handle(gpio_iter->dev_fd, gpio_iter->gpio_lines,
+                                                    gpio_iter->num_gpio_lines, flags, 0);
+                if (line_handle <= 0) {
+                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting line handle");
+                    return MRAA_ERROR_INVALID_RESOURCE;
+                }
 
-            gpio_iter->gpiod_handle = line_handle;
+                gpio_iter->gpiod_handle = line_handle;
+            }
         }
     } else {
 
@@ -1200,8 +1346,8 @@ mraa_gpio_mode(mraa_gpio_context dev, mraa_gpio_mode_t mode)
     return MRAA_SUCCESS;
 }
 
-mraa_result_t
-mraa_gpio_chardev_dir(mraa_gpio_context dev, mraa_gpio_dir_t dir)
+static mraa_result_t
+mraa_gpio_chardev_dir_v1(mraa_gpio_context dev, mraa_gpio_dir_t dir)
 {
     int line_handle;
     unsigned flags = 0;
@@ -1267,6 +1413,55 @@ mraa_gpio_chardev_dir(mraa_gpio_context dev, mraa_gpio_dir_t dir)
 }
 
 static mraa_result_t
+mraa_gpio_chardev_dir_v2(mraa_gpio_context dev, mraa_gpio_dir_t dir)
+{
+    unsigned long flags = 0;
+    struct _gpio_group* gpio_iter;
+
+    for_each_gpio_group(gpio_iter, dev)
+    {
+        int ret = mraa_gpiod_get_line_flags(gpio_iter->dev_fd, gpio_iter->gpio_lines[0], &flags);
+        if (ret != 0) {
+            syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting line flags");
+            return MRAA_ERROR_INVALID_RESOURCE;
+        }
+
+        flags &= ~GPIO_V2_LINE_FLAG_USED;
+
+        switch (dir) {
+            case MRAA_GPIO_OUT_HIGH:
+            case MRAA_GPIO_OUT_LOW:
+            case MRAA_GPIO_OUT:
+                if (flags & GPIO_V2_LINE_FLAG_OUTPUT) {
+                    syslog(LOG_DEBUG, "[GPIOD_INTERFACE]: line already configured as output");
+                    return MRAA_SUCCESS;
+                }
+                flags |= GPIO_V2_LINE_FLAG_OUTPUT;
+                flags &= ~GPIO_V2_LINE_FLAG_INPUT;
+                break;
+            case MRAA_GPIO_IN:
+                if (flags & GPIO_V2_LINE_FLAG_INPUT) {
+                    syslog(LOG_DEBUG, "[GPIOD_INTERFACE]: line already configured as input");
+                    return MRAA_SUCCESS;
+                }
+                flags |= GPIO_V2_LINE_FLAG_INPUT;
+                flags &= ~GPIO_V2_LINE_FLAG_OUTPUT;
+                break;
+            default:
+                return MRAA_ERROR_FEATURE_NOT_IMPLEMENTED;
+        }
+
+        ret = mraa_gpiod_reconfig_lines(gpio_iter->line_request_fd, flags);
+        if (ret != 0) {
+            syslog(LOG_ERR, "[GPIOD_INTERFACE]: error reconfiguring line flags: %d", ret);
+            return MRAA_ERROR_INVALID_RESOURCE;
+        }
+    }
+
+    return MRAA_SUCCESS;
+}
+
+static mraa_result_t
 gpio_sysfs_read_dir(mraa_gpio_context dev, int dir_fd, mraa_gpio_dir_t *dir)
 {
     char value[5];
@@ -1311,7 +1506,8 @@ mraa_gpio_dir(mraa_gpio_context dev, mraa_gpio_dir_t dir)
     }
 
     if (plat->chardev_capable)
-        return mraa_gpio_chardev_dir(dev, dir);
+        return plat->chardev_capable == 2 ? mraa_gpio_chardev_dir_v2(dev, dir) :
+                                            mraa_gpio_chardev_dir_v1(dev, dir);
 
     mraa_gpio_context it = dev;
 
@@ -1390,7 +1586,10 @@ mraa_gpio_read_dir(mraa_gpio_context dev, mraa_gpio_dir_t* dir)
     mraa_result_t result = MRAA_SUCCESS;
 
     /* Initialize with 'unusable'. */
-    unsigned flags = GPIOLINE_FLAG_KERNEL;
+    unsigned long flags = GPIOLINE_FLAG_KERNEL;
+
+    if (plat->chardev_capable == 2)
+        flags = 0;
 
     if (IS_FUNC_DEFINED(dev, gpio_read_dir_replace)) {
         return dev->advance_func->gpio_read_dir_replace(dev, dir);
@@ -1401,25 +1600,37 @@ mraa_gpio_read_dir(mraa_gpio_context dev, mraa_gpio_dir_t* dir)
 
         for_each_gpio_group(gpio_iter, dev)
         {
-            mraa_gpiod_line_info* linfo =
-            mraa_get_line_info_by_chip_number(gpio_iter->gpio_chip, gpio_iter->gpio_lines[0]);
-            if (!linfo) {
-                syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting line info");
-                return MRAA_ERROR_UNSPECIFIED;
+            if (plat->chardev_capable == 2) {
+                int ret = mraa_gpiod_get_line_flags(gpio_iter->dev_fd, gpio_iter->gpio_lines[0], &flags);
+                if (ret != 0) {
+                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting line flags");
+                    return MRAA_ERROR_INVALID_RESOURCE;
+                }
+            } else {
+                mraa_gpiod_line_info* linfo =
+                mraa_get_line_info_by_chip_number(gpio_iter->gpio_chip, gpio_iter->gpio_lines[0]);
+                if (!linfo) {
+                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting line info");
+                    return MRAA_ERROR_UNSPECIFIED;
+                }
+                flags = linfo->flags;
+                free(linfo);
             }
-            flags = linfo->flags;
-            free(linfo);
 
             /* We don't need to iterate further. */
             break;
         }
 
-        if (flags & GPIOLINE_FLAG_KERNEL) {
+        if ((plat->chardev_capable != 2) && (flags & GPIOLINE_FLAG_KERNEL)) {
             syslog(LOG_ERR, "[GPIOD_INTERFACE]: cannot read gpio direction. Line used by kernel.");
             return MRAA_ERROR_UNSPECIFIED;
         }
 
-        *dir = flags & GPIOLINE_FLAG_IS_OUT ? MRAA_GPIO_OUT : MRAA_GPIO_IN;
+        if (plat->chardev_capable == 2) {
+            *dir = flags & GPIO_V2_LINE_FLAG_OUTPUT ? MRAA_GPIO_OUT : MRAA_GPIO_IN;
+        } else {
+            *dir = flags & GPIOLINE_FLAG_IS_OUT ? MRAA_GPIO_OUT : MRAA_GPIO_IN;
+        }
     } else {
         char filepath[MAX_SIZE];
         int fd;
@@ -1509,22 +1720,32 @@ mraa_gpio_read_multi(mraa_gpio_context dev, int output_values[])
         for_each_gpio_group(gpio_iter, dev)
         {
             int status;
-            unsigned flags = GPIOHANDLE_REQUEST_INPUT;
 
-            if (gpio_iter->gpiod_handle <= 0) {
-                gpio_iter->gpiod_handle = mraa_get_lines_handle(gpio_iter->dev_fd, gpio_iter->gpio_lines,
-                                                                gpio_iter->num_gpio_lines, flags, 0);
-                if (gpio_iter->gpiod_handle <= 0) {
-                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting gpio line handle");
-                    return MRAA_ERROR_INVALID_HANDLE;
+            if (plat->chardev_capable == 2) {
+                status = mraa_gpiod_get_values(gpio_iter->line_request_fd,
+                                               gpio_iter->num_gpio_lines, gpio_iter->rw_values);
+                if (status < 0) {
+                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error reading gpio");
+                    return MRAA_ERROR_INVALID_RESOURCE;
                 }
-            }
+            } else {
+                unsigned flags = GPIOHANDLE_REQUEST_INPUT;
 
-            status =
-            mraa_get_line_values(gpio_iter->gpiod_handle, gpio_iter->num_gpio_lines, gpio_iter->rw_values);
-            if (status < 0) {
-                syslog(LOG_ERR, "[GPIOD_INTERFACE]: error writing gpio");
-                return MRAA_ERROR_INVALID_RESOURCE;
+                if (gpio_iter->gpiod_handle <= 0) {
+                    gpio_iter->gpiod_handle = mraa_get_lines_handle(gpio_iter->dev_fd, gpio_iter->gpio_lines,
+                                                                    gpio_iter->num_gpio_lines, flags, 0);
+                    if (gpio_iter->gpiod_handle <= 0) {
+                        syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting gpio line handle");
+                        return MRAA_ERROR_INVALID_HANDLE;
+                    }
+                }
+
+                status = mraa_get_line_values(gpio_iter->gpiod_handle, gpio_iter->num_gpio_lines,
+                                              gpio_iter->rw_values);
+                if (status < 0) {
+                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error writing gpio");
+                    return MRAA_ERROR_INVALID_RESOURCE;
+                }
             }
 
             /* Write values back to the user provided array. */
@@ -1634,22 +1855,31 @@ mraa_gpio_write_multi(mraa_gpio_context dev, int input_values[])
         for_each_gpio_group(gpio_iter, dev)
         {
             int status;
-            unsigned flags = GPIOHANDLE_REQUEST_OUTPUT;
-
-            if (gpio_iter->gpiod_handle <= 0) {
-                gpio_iter->gpiod_handle = mraa_get_lines_handle(gpio_iter->dev_fd, gpio_iter->gpio_lines,
-                                                                gpio_iter->num_gpio_lines, flags, 0);
-                if (gpio_iter->gpiod_handle <= 0) {
-                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting gpio line handle");
-                    return MRAA_ERROR_INVALID_HANDLE;
+            if (plat->chardev_capable == 2) {
+                status = mraa_gpiod_set_values(gpio_iter->line_request_fd,
+                                               gpio_iter->num_gpio_lines, gpio_iter->rw_values);
+                if (status < 0) {
+                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error writing gpio");
+                    return MRAA_ERROR_INVALID_RESOURCE;
                 }
-            }
+            } else {
+                unsigned flags = GPIOHANDLE_REQUEST_OUTPUT;
 
-            status =
-            mraa_set_line_values(gpio_iter->gpiod_handle, gpio_iter->num_gpio_lines, gpio_iter->rw_values);
-            if (status < 0) {
-                syslog(LOG_ERR, "[GPIOD_INTERFACE]: error writing gpio");
-                return MRAA_ERROR_INVALID_RESOURCE;
+                if (gpio_iter->gpiod_handle <= 0) {
+                    gpio_iter->gpiod_handle = mraa_get_lines_handle(gpio_iter->dev_fd, gpio_iter->gpio_lines,
+                                                                    gpio_iter->num_gpio_lines, flags, 0);
+                    if (gpio_iter->gpiod_handle <= 0) {
+                        syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting gpio line handle");
+                        return MRAA_ERROR_INVALID_HANDLE;
+                    }
+                }
+
+                status = mraa_set_line_values(gpio_iter->gpiod_handle, gpio_iter->num_gpio_lines,
+                                              gpio_iter->rw_values);
+                if (status < 0) {
+                    syslog(LOG_ERR, "[GPIOD_INTERFACE]: error writing gpio");
+                    return MRAA_ERROR_INVALID_RESOURCE;
+                }
             }
         }
     } else {
@@ -1833,11 +2063,69 @@ mraa_gpio_get_pin_raw(mraa_gpio_context dev)
 }
 
 mraa_result_t
+mraa_gpio_input_mode_chardev(mraa_gpio_context dev, mraa_gpio_input_mode_t mode)
+{
+    mraa_gpiod_group_t gpio_group;
+    unsigned long flags = 0;
+    int ret;
+
+    for_each_gpio_group(gpio_group, dev)
+    {
+        ret = mraa_gpiod_get_line_flags(gpio_group->dev_fd, gpio_group->gpio_lines[0], &flags);
+        if (ret != 0) {
+            syslog(LOG_ERR, "[GPIOD_INTERFACE]: error getting line flags");
+            return MRAA_ERROR_INVALID_RESOURCE;
+        }
+
+        if ((flags & GPIO_V2_LINE_FLAG_INPUT) == 0) {
+            syslog(LOG_ERR, "[GPIOD_INTERFACE]: error setting line input mode. Line is not "
+                            "configured as input.");
+            return MRAA_ERROR_INVALID_RESOURCE;
+        }
+
+        switch (mode) {
+            case MRAA_GPIO_ACTIVE_HIGH:
+                if ((flags & GPIO_V2_LINE_FLAG_ACTIVE_LOW) == 0) {
+                    syslog(LOG_DEBUG, "[GPIOD_INTERFACE]: Line is already active high.");
+                    return MRAA_SUCCESS;
+                }
+                flags &= ~GPIO_V2_LINE_FLAG_ACTIVE_LOW;
+                break;
+            case MRAA_GPIO_ACTIVE_LOW:
+                if (flags & GPIO_V2_LINE_FLAG_ACTIVE_LOW) {
+                    syslog(LOG_DEBUG, "[GPIOD_INTERFACE]: Line is already active low.");
+                    return MRAA_SUCCESS;
+                }
+                flags |= GPIO_V2_LINE_FLAG_ACTIVE_LOW;
+                break;
+            default:
+                return MRAA_ERROR_FEATURE_NOT_IMPLEMENTED;
+        }
+
+        flags &= ~GPIO_V2_LINE_FLAG_USED;
+
+        ret = mraa_gpiod_reconfig_lines(gpio_group->line_request_fd, flags);
+        if (ret != 0) {
+            syslog(LOG_ERR, "[GPIOD_INTERFACE]: error reconfiguring line flags: %d", ret);
+            return MRAA_ERROR_INVALID_RESOURCE;
+        }
+
+        break;
+    }
+
+    return MRAA_SUCCESS;
+}
+
+mraa_result_t
 mraa_gpio_input_mode(mraa_gpio_context dev, mraa_gpio_input_mode_t mode)
 {
     if (dev == NULL) {
         syslog(LOG_ERR, "gpio: in_mode: context is invalid");
         return MRAA_ERROR_INVALID_HANDLE;
+    }
+
+    if (plat->chardev_capable == 2) {
+        return mraa_gpio_input_mode_chardev(dev, mode);
     }
 
     char filepath[MAX_SIZE];

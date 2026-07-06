@@ -92,9 +92,13 @@ struct _firmata {
 #endif
 
 struct _gpio_group {
+    int api_ver; /* V1 or V2 */
     int is_required;
-    int dev_fd;
-    int gpiod_handle;
+    int dev_fd; /* gpio_chip 的fd  */
+    union {
+        int gpiod_handle;
+        int line_request_fd;
+    };
     unsigned int gpio_chip;
     /* We can have multiple lines in a gpio group. */
     unsigned int num_gpio_lines;
@@ -140,9 +144,18 @@ struct _gpio {
     AGpio *bgpio;
 #endif
 
+    // 数组, 包含了当前系统的所有的gpio chip的信息。
     struct _gpio_group *gpio_group;
+
+    // 当前系统的gpiochip的总数量，和申请的pins无关。
     unsigned int num_chips;
+
+    // 存储了当前gpio context 申请的pins到gpio group的映射关
+    // 系，pin_to_gpio_table[i] = j表示pins[i]对应的gpio group是
+    // gpio_group[j]
     int *pin_to_gpio_table;
+
+    // 当前gpio context申请的pins的总数量
     unsigned int num_pins;
     mraa_gpio_events_t events;
     int *provided_pins;
@@ -499,7 +512,7 @@ typedef struct _board_t {
     mraa_pininfo_t* pins;     /**< Pointer to pin array */
     mraa_adv_func_t* adv_func;    /**< Pointer to advanced function disptach table */
     struct _board_t* sub_platform;     /**< Pointer to sub platform */
-    mraa_boolean_t chardev_capable;  /**< Decide what interface is being used: old sysfs or new char device*/
+    unsigned int chardev_capable;  /**< Decide what interface is being used: 0 for old sysfs, 1 for chardev V1, 2 for chardev V2 */
     mraa_led_dev_t led_dev[MAX_LED_COUNT]; /**< Array of LED devices */
     unsigned int led_dev_count; /**< Total onboard LED device count */
     /*@}*/

@@ -99,7 +99,7 @@ mraa_boolean_t
 mraa_is_platform_chardev_interface_capable()
 {
     if ((plat != NULL) && (plat->chardev_capable)) {
-        return mraa_is_kernel_chardev_interface_compatible();
+        return (mraa_is_kernel_chardev_interface_compatible()) ? plat->chardev_capable : 0;
     }
 
     syslog(LOG_NOTICE, "gpio: platform doesn't support chardev, falling back to sysfs");
